@@ -61,6 +61,8 @@ export interface DataUpdateResponse {
 interface TimePointData {
 	index: TimePointIndex;
 	timePoint: InternalHorzScaleItem;
+	// the setSeriesData pass that last wrote a row here (see deleteStale)
+	stamp?: number;
 
 	// actually the type of the value should be related to the series' type (generic type)
 	// here, in data layer all data for us is "mutable" by default, but to the chart we provide "readonly" data, to avoid modifying it
@@ -133,6 +135,7 @@ export class DataLayer<HorzScaleItem> {
 	private _pointDataByTimePoint: Map<InternalHorzScaleItemKey, TimePointData> = new Map();
 	private _seriesRowsBySeries: Map<Series<SeriesType>, SeriesPlotRow<SeriesType>[]> = new Map();
 	private _seriesLastTimePoint: Map<Series<SeriesType>, InternalHorzScaleItem> = new Map();
+	private _setStamp: number = 0;
 
 	// this is kind of "dest" values (in opposite to "source" ones) - we don't need to modify it manually, the only by calling _updateTimeScalePoints or updateSeriesData methods
 	private _sortedTimePoints: readonly InternalTimeScalePoint[] = [];
@@ -154,6 +157,8 @@ export class DataLayer<HorzScaleItem> {
 		let needCleanupPoints = this._pointDataByTimePoint.size !== 0;
 
 		let isTimeScaleAffected = false;
+		let deleteStale = false;
+		const stamp = ++this._setStamp;
 
 		// save previous series rows data before it's replaced inside this._setRowsToSeries
 		const prevSeriesRows = this._seriesRowsBySeries.get(series);
@@ -167,11 +172,10 @@ export class DataLayer<HorzScaleItem> {
 			} else {
 				// perf optimization - actually we have to use this._pointDataByTimePoint for going through here
 				// but as soon as this._sortedTimePoints is just a different form of _pointDataByTimePoint we can use it as well
-				for (const point of this._sortedTimePoints) {
-					if (point.pointData.mapping.delete(series)) {
-						isTimeScaleAffected = true;
-					}
-				}
+				// Old rows are NOT deleted up front: set() below overwrites them in place, and only the points
+				// this series no longer has are deleted after it (deleteStale). Deleting every row and re-adding
+				// it churned a ~series-count-sized Map on every bar: ~35% of a line setData on a deep chart.
+				deleteStale = true;
 			}
 		}
 
@@ -201,14 +205,23 @@ export class DataLayer<HorzScaleItem> {
 
 				const row = createPlotRow(time, timePointData.index, item, originalTimes[index], dataToPlotRow, customWhitespaceChecker);
 				timePointData.mapping.set(series, row);
+				timePointData.stamp = stamp;
 				return row;
 			});
 		}
 
-		if (needCleanupPoints) {
-			// we deleted the old data from mapping and added the new ones
-			// so there might be empty points now, let's remove them first
-			this._cleanupPointsData();
+		if (deleteStale) {
+			for (const point of this._sortedTimePoints) {
+				if (point.pointData.stamp !== stamp) {
+					point.pointData.mapping.delete(series);
+				}
+			}
+		}
+
+		// A point leaves the time scale only when it ends up EMPTY. Upstream flagged every delete as a
+		// time-scale change, so each setData of an existing series re-sorted (and re-sent) all points.
+		if (needCleanupPoints && this._cleanupPointsData()) {
+			isTimeScaleAffected = true;
 		}
 
 		this._setRowsToSeries(series, seriesRows);
@@ -449,7 +462,8 @@ export class DataLayer<HorzScaleItem> {
 		}
 	}
 
-	private _cleanupPointsData(): void {
+	private _cleanupPointsData(): boolean {
+		let removed = false;
 		// let's treat all current points as "potentially removed"
 		// we could create an array with actually potentially removed points
 		// but most likely this array will be similar to _sortedTimePoints so let's avoid using additional memory
@@ -457,8 +471,10 @@ export class DataLayer<HorzScaleItem> {
 		for (const point of this._sortedTimePoints) {
 			if (point.pointData.mapping.size === 0) {
 				this._pointDataByTimePoint.delete(this._horzScaleBehavior.key(point.time));
+				removed = true;
 			}
 		}
+		return removed;
 	}
 
 	/**

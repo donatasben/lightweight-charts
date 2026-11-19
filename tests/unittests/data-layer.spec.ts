@@ -814,6 +814,31 @@ describe('DataLayer', () => {
 		});
 	});
 
+	describe('setData on existing times', () => {
+		it('should not change the time scale when a series re-sets data on existing times', () => {
+			const dataLayer = new DataLayer(behavior);
+			const s1 = createSeriesMock('Candlestick');
+			const s2 = createSeriesMock();
+			dataLayer.setSeriesData(s1, [candlestickDataAt(1000 as UTCTimestamp, 1, 2, 0, 1), candlestickDataAt(2000 as UTCTimestamp, 1, 2, 0, 1)]);
+			dataLayer.setSeriesData(s2, [lineDataAt(1000 as UTCTimestamp, 1)]);
+			const res = dataLayer.setSeriesData(s2, [lineDataAt(1000 as UTCTimestamp, 2), lineDataAt(2000 as UTCTimestamp, 3)]);
+			expect(res.timeScale.firstChangedPointIndex).to.be.equal(undefined);
+			expect(ensureDefined(res.series.get(s2)).data.map((r: { value: number[] }) => r.value[3])).to.deep.equal([2, 3]);
+		});
+
+		it('should drop the points a series no longer has and keep the ones it still has', () => {
+			const dataLayer = new DataLayer(behavior);
+			const s1 = createSeriesMock('Candlestick');
+			const s2 = createSeriesMock();
+			dataLayer.setSeriesData(s1, [candlestickDataAt(1000 as UTCTimestamp, 1, 2, 0, 1), candlestickDataAt(2000 as UTCTimestamp, 1, 2, 0, 1)]);
+			dataLayer.setSeriesData(s2, [lineDataAt(1000 as UTCTimestamp, 1), lineDataAt(2000 as UTCTimestamp, 1), lineDataAt(3000 as UTCTimestamp, 1)]);
+			const res = dataLayer.setSeriesData(s2, [lineDataAt(2000 as UTCTimestamp, 5)]);
+			expect(ensureDefined(res.timeScale.points).map((p: InternalTimeScalePoint) => (p.time as unknown as { timestamp: number }).timestamp)).to.deep.equal([1000, 2000]);
+			const rows = ensureDefined(res.series.get(s2)).data;
+			expect(rows.map((r: { index: number; value: number[] }) => [r.index, r.value[3]])).to.deep.equal([[1, 5]]);
+		});
+	});
+
 	describe('customValues', () => {
 		it('should be able to store customValues in a data point', () => {
 			const dataLayer = new DataLayer<Time>(behavior);
